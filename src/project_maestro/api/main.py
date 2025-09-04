@@ -22,7 +22,7 @@ from ..core.monitoring import (
 )
 from ..core.error_handling import error_recovery_engine
 from .models import HealthCheckResponse, ErrorResponse
-from .endpoints import projects, agents, assets, builds, analytics, events
+from .endpoints import projects, agents, assets, builds, analytics, events, conversations, privacy
 
 
 @asynccontextmanager
@@ -130,6 +130,8 @@ app.include_router(assets.router, prefix="/api/v1/assets", tags=["assets"])
 app.include_router(builds.router, prefix="/api/v1/builds", tags=["builds"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(events.router, prefix="/api/v1/events", tags=["events"])
+app.include_router(conversations.router, tags=["conversations"])
+app.include_router(privacy.router, tags=["privacy"])
 
 
 # Global exception handler
