@@ -157,6 +157,40 @@ class Settings(BaseSettings):
     enterprise_data_retention_days: int = Field(default=90)
     enterprise_sync_enabled: bool = Field(default=True)
     
+    # ====== Conversation Memory System ======
+    
+    # Memory System Core Settings
+    conversation_memory_enabled: bool = Field(default=True)
+    memory_redis_db: int = Field(default=3)  # Separate Redis DB for memory
+    
+    # Short-term Memory Configuration
+    short_term_memory_window_size: int = Field(default=10)
+    short_term_memory_ttl_hours: int = Field(default=24)
+    
+    # Summary Memory Configuration  
+    summary_memory_enabled: bool = Field(default=True)
+    summary_memory_model: str = Field(default="gpt-3.5-turbo")
+    summary_memory_max_tokens: int = Field(default=2000)  # Token threshold for summarization
+    summary_memory_ttl_days: int = Field(default=7)
+    
+    # Entity Extraction Configuration
+    entity_extraction_enabled: bool = Field(default=True)
+    entity_extraction_model: str = Field(default="gpt-3.5-turbo") 
+    entity_extraction_confidence_threshold: float = Field(default=0.7)
+    entity_extraction_batch_size: int = Field(default=5)  # Messages per extraction batch
+    
+    # Vector Memory Configuration
+    vector_memory_enabled: bool = Field(default=True)
+    vector_memory_embedding_model: str = Field(default="text-embedding-ada-002")
+    vector_memory_similarity_threshold: float = Field(default=0.7)
+    vector_memory_max_results: int = Field(default=10)
+    vector_memory_namespace_prefix: str = Field(default="memory")
+    
+    # Memory Performance Settings
+    memory_async_processing: bool = Field(default=True)
+    memory_cache_size: int = Field(default=1000)  # In-memory cache size
+    memory_processing_timeout: int = Field(default=30)  # Seconds
+    
     # Project Paths
     project_root: Path = Field(default_factory=lambda: Path(__file__).parent.parent.parent.parent)
     data_dir: Path = Field(default_factory=lambda: Path("/tmp/maestro_data"))
