@@ -1,706 +1,621 @@
-"""대화 메모리 시스템 테스트"""
+"""
+Comprehensive tests for the 3-tier conversation memory system.
+Tests performance, efficiency, and integration with LangGraph.
+"""
 
-import pytest
 import asyncio
+import json
+import pytest
+import time
 from datetime import datetime, timedelta
 from unittest.mock import Mock, AsyncMock, patch
-import uuid
+from typing import List
+
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 
 from src.project_maestro.core.conversation_memory import (
     ConversationMemoryManager,
-    EmbeddingManager,
-    MessageType,
-    ConversationInfo,
-    MessageInfo,
-    SearchResult
+    ShortTermMemory,
+    SummaryMemory,
+    EntityExtractor,
+    VectorMemoryStore,
+    Entity,
+    EntityType,
+    MemoryContext
 )
-from src.project_maestro.core.memory_aware_agent import (
-    MemoryAwareAgent,
-    MemoryContext,
-    ConversationSession
-)
-from src.project_maestro.core.privacy_policy import (
-    PrivacyPolicyManager,
-    ConsentType,
-    DataCategory,
-    RetentionPeriod
-)
+from src.project_maestro.core.config import settings
 
 
-class TestEmbeddingManager:
-    """임베딩 매니저 테스트"""
-    
-    @pytest.fixture
-    def embedding_manager(self):
-        return EmbeddingManager("sentence-transformers/all-MiniLM-L6-v2")
+@pytest.fixture
+def mock_llm():
+    """Mock LLM for testing."""
+    llm = Mock()
+    llm.ainvoke = AsyncMock()
+    return llm
+
+
+@pytest.fixture
+def sample_game_conversation():
+    """Sample game development conversation for testing."""
+    return [
+        HumanMessage(content="Hi, I'm John. I want to create a platformer game like Mario."),
+        AIMessage(content="Great! A platformer game is a classic choice. What platform are you targeting?"),
+        HumanMessage(content="I'm thinking mobile, specifically Android and iOS. I love pixel art style."),
+        AIMessage(content="Perfect! Mobile platformers with pixel art are very popular. What's your experience level?"),
+        HumanMessage(content="I'm a beginner programmer, know some Python but new to game development."),
+        AIMessage(content="That's a good starting point. Would you like to use a beginner-friendly engine like Unity?"),
+        HumanMessage(content="Yes, Unity sounds good. I also really like characters with expressive animations."),
+        AIMessage(content="Unity is excellent for mobile games. For expressive characters, we'll focus on smooth animations."),
+    ]
+
+
+class TestShortTermMemory:
+    """Test short-term memory sliding window functionality."""
     
     @pytest.mark.asyncio
-    async def test_embedding_initialization(self, embedding_manager):
-        """임베딩 모델 초기화 테스트"""
-        # 모델이 아직 로드되지 않았는지 확인
-        assert embedding_manager.model is None
+    async def test_store_and_retrieve_messages(self, sample_game_conversation):
+        """Test basic message storage and retrieval."""
+        memory = ShortTermMemory(window_size=5)
+        user_id = "test_user"
+        session_id = "test_session"
         
-        # 초기화 실행
-        with patch('sentence_transformers.SentenceTransformer') as mock_model:
-            mock_model.return_value = Mock()
-            await embedding_manager.initialize()
-            
-            # 모델이 로드되었는지 확인
-            assert embedding_manager.model is not None
-            mock_model.assert_called_once_with("sentence-transformers/all-MiniLM-L6-v2")
-    
-    @pytest.mark.asyncio
-    async def test_encode_single_text(self, embedding_manager):
-        """단일 텍스트 임베딩 생성 테스트"""
-        test_text = "안녕하세요, 테스트 메시지입니다."
+        # Store messages
+        for message in sample_game_conversation[:6]:
+            await memory.store_message(message, user_id, session_id)
         
-        with patch.object(embedding_manager, 'model') as mock_model:
-            # Mock 임베딩 결과
-            mock_embedding = [[0.1, 0.2, 0.3]]
-            mock_model.encode.return_value = mock_embedding
-            
-            result = await embedding_manager.encode_single(test_text)
-            
-            # 결과 검증
-            assert result is not None
-            assert len(result) == 3
-            mock_model.encode.assert_called_once_with([test_text])
+        # Retrieve messages
+        retrieved = await memory.retrieve(user_id, session_id)
+        
+        # Should only have last 5 messages due to sliding window
+        assert len(retrieved) == 5
+        assert retrieved[0].content == sample_game_conversation[1].content  # First message was dropped
     
     @pytest.mark.asyncio
-    async def test_encode_multiple_texts(self, embedding_manager):
-        """다중 텍스트 임베딩 생성 테스트"""
-        test_texts = [
-            "첫 번째 메시지",
-            "두 번째 메시지",
-            "세 번째 메시지"
+    async def test_sliding_window_behavior(self):
+        """Test that sliding window correctly maintains size."""
+        memory = ShortTermMemory(window_size=3)
+        user_id = "test_user"
+        session_id = "test_session"
+        
+        messages = [
+            HumanMessage(content=f"Message {i}")
+            for i in range(10)
         ]
         
-        with patch.object(embedding_manager, 'model') as mock_model:
-            # Mock 임베딩 결과
-            mock_embeddings = [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
-            mock_model.encode.return_value = mock_embeddings
+        # Store all messages
+        for message in messages:
+            await memory.store_message(message, user_id, session_id)
+        
+        retrieved = await memory.retrieve(user_id, session_id)
+        
+        # Should only have last 3 messages
+        assert len(retrieved) == 3
+        assert retrieved[0].content == "Message 7"
+        assert retrieved[1].content == "Message 8"
+        assert retrieved[2].content == "Message 9"
+    
+    @pytest.mark.asyncio
+    async def test_performance_large_volume(self):
+        """Test performance with large message volumes."""
+        memory = ShortTermMemory(window_size=100)
+        user_id = "test_user"
+        session_id = "test_session"
+        
+        # Generate large number of messages
+        messages = [HumanMessage(content=f"Message {i}") for i in range(1000)]
+        
+        start_time = time.time()
+        
+        # Store messages
+        for message in messages:
+            await memory.store_message(message, user_id, session_id)
+        
+        # Retrieve messages
+        retrieved = await memory.retrieve(user_id, session_id)
+        
+        end_time = time.time()
+        execution_time = end_time - start_time
+        
+        # Performance assertions
+        assert execution_time < 5.0  # Should complete within 5 seconds
+        assert len(retrieved) == 100  # Should maintain window size
+        print(f"Short-term memory processed 1000 messages in {execution_time:.2f}s")
+
+
+class TestSummaryMemory:
+    """Test summary memory LLM-based summarization."""
+    
+    @pytest.mark.asyncio
+    async def test_summarization_trigger(self, mock_llm, sample_game_conversation):
+        """Test that summarization is triggered when token threshold is exceeded."""
+        # Mock LLM response for summarization
+        mock_llm.ainvoke.return_value.content = """
+        User John wants to create a mobile platformer game similar to Mario.
+        Key preferences: Android/iOS platform, pixel art style, beginner programmer with Python experience.
+        Chose Unity engine for development. Likes expressive character animations.
+        """
+        
+        # Set low threshold to trigger summarization
+        memory = SummaryMemory(mock_llm, max_token_threshold=100)
+        user_id = "test_user"
+        session_id = "test_session"
+        
+        # Store messages to exceed threshold
+        long_message = HumanMessage(content="This is a very long message " * 50)  # ~200 tokens
+        await memory.store_message(long_message, user_id, session_id)
+        
+        # Give time for async summarization
+        await asyncio.sleep(0.1)
+        
+        # Check if summarization was created
+        summary = await memory.retrieve(user_id, session_id)
+        assert summary is not None
+        assert "John" in summary
+        assert "platformer" in summary
+        mock_llm.ainvoke.assert_called()
+    
+    @pytest.mark.asyncio
+    async def test_summary_content_quality(self, mock_llm, sample_game_conversation):
+        """Test quality of generated summaries."""
+        mock_llm.ainvoke.return_value.content = """
+        User Profile: John, beginner programmer with Python experience
+        Game Vision: Mobile platformer inspired by Mario for Android/iOS
+        Art Preference: Pixel art style with expressive character animations
+        Engine Choice: Unity for mobile development
+        Experience Level: New to game development, eager to learn
+        """
+        
+        memory = SummaryMemory(mock_llm, max_token_threshold=50)
+        user_id = "test_user"  
+        session_id = "test_session"
+        
+        # Trigger summarization
+        await memory.store_message(
+            HumanMessage(content="Long message content " * 20), 
+            user_id, 
+            session_id
+        )
+        
+        await asyncio.sleep(0.1)
+        summary = await memory.retrieve(user_id, session_id)
+        
+        # Verify summary contains key information
+        assert summary is not None
+        assert "John" in summary
+        assert "platformer" in summary or "Mario" in summary
+        assert "pixel art" in summary.lower() or "Unity" in summary
+    
+    @pytest.mark.asyncio
+    async def test_token_efficiency(self, mock_llm):
+        """Test that summarization reduces token count effectively."""
+        mock_llm.ainvoke.return_value.content = "Concise summary of long conversation."
+        
+        memory = SummaryMemory(mock_llm, max_token_threshold=200)
+        user_id = "test_user"
+        session_id = "test_session"
+        
+        # Store long messages
+        total_original_length = 0
+        for i in range(5):
+            long_content = f"This is message {i} with lots of detailed content " * 20
+            total_original_length += len(long_content)
+            await memory.store_message(
+                HumanMessage(content=long_content), 
+                user_id, 
+                session_id
+            )
+        
+        await asyncio.sleep(0.1)
+        summary = await memory.retrieve(user_id, session_id)
+        
+        # Summary should be much shorter than original content
+        if summary:
+            compression_ratio = len(summary) / total_original_length
+            assert compression_ratio < 0.1  # At least 90% compression
+            print(f"Achieved {(1-compression_ratio)*100:.1f}% compression")
+
+
+class TestEntityExtractor:
+    """Test entity extraction from game development conversations."""
+    
+    @pytest.mark.asyncio
+    async def test_entity_extraction_game_context(self, mock_llm, sample_game_conversation):
+        """Test extraction of game development entities."""
+        # Mock entity extraction response
+        mock_llm.ainvoke.return_value.content = json.dumps([
+            {
+                "type": "user_profile",
+                "content": "John, beginner programmer with Python experience, new to game development",
+                "confidence": 0.9,
+                "metadata": {"experience_level": "beginner", "languages": ["python"]}
+            },
+            {
+                "type": "game_preference", 
+                "content": "Platformer games like Mario",
+                "confidence": 0.95,
+                "metadata": {"inspiration": "Mario", "genre": "platformer"}
+            },
+            {
+                "type": "platform_preference",
+                "content": "Mobile (Android and iOS)",
+                "confidence": 0.9,
+                "metadata": {"platforms": ["android", "ios"]}
+            },
+            {
+                "type": "art_style",
+                "content": "Pixel art with expressive character animations",
+                "confidence": 0.85,
+                "metadata": {"style": "pixel_art", "focus": "character_animations"}
+            }
+        ])
+        
+        extractor = EntityExtractor(mock_llm)
+        entities = await extractor.extract_entities(sample_game_conversation, "test_user")
+        
+        # Verify extracted entities
+        assert len(entities) == 4
+        
+        entity_types = [e.type for e in entities]
+        assert EntityType.USER_PROFILE in entity_types
+        assert EntityType.GAME_PREFERENCE in entity_types  
+        assert EntityType.PLATFORM_PREFERENCE in entity_types
+        assert EntityType.ART_STYLE in entity_types
+        
+        # Check entity content quality
+        profile_entity = next(e for e in entities if e.type == EntityType.USER_PROFILE)
+        assert "John" in profile_entity.content
+        assert "beginner" in profile_entity.content.lower()
+    
+    @pytest.mark.asyncio
+    async def test_confidence_filtering(self, mock_llm):
+        """Test that low-confidence entities are filtered out."""
+        # Mock response with mixed confidence levels
+        mock_llm.ainvoke.return_value.content = json.dumps([
+            {
+                "type": "user_profile",
+                "content": "High confidence entity",
+                "confidence": 0.95,
+                "metadata": {}
+            },
+            {
+                "type": "game_preference",
+                "content": "Low confidence entity", 
+                "confidence": 0.3,  # Below threshold
+                "metadata": {}
+            }
+        ])
+        
+        extractor = EntityExtractor(mock_llm)
+        entities = await extractor.extract_entities([HumanMessage(content="test")], "test_user")
+        
+        # Should only have high-confidence entity
+        assert len(entities) == 1
+        assert entities[0].confidence >= 0.7
+        assert "High confidence" in entities[0].content
+    
+    @pytest.mark.asyncio
+    async def test_entity_extraction_performance(self, mock_llm):
+        """Test performance of entity extraction."""
+        mock_llm.ainvoke.return_value.content = json.dumps([
+            {
+                "type": "user_profile",
+                "content": "Test entity",
+                "confidence": 0.8,
+                "metadata": {}
+            }
+        ])
+        
+        extractor = EntityExtractor(mock_llm)
+        
+        # Test with varying conversation lengths
+        for msg_count in [5, 20, 50]:
+            messages = [HumanMessage(content=f"Message {i}") for i in range(msg_count)]
             
-            results = await embedding_manager.encode(test_texts)
+            start_time = time.time()
+            entities = await extractor.extract_entities(messages, "test_user")
+            end_time = time.time()
             
-            # 결과 검증
-            assert results is not None
-            assert len(results) == 3
-            mock_model.encode.assert_called_once_with(test_texts)
+            execution_time = end_time - start_time
+            assert execution_time < 3.0  # Should complete within 3 seconds
+            print(f"Extracted entities from {msg_count} messages in {execution_time:.2f}s")
+
+
+class TestVectorMemoryStore:
+    """Test vector-based long-term memory storage."""
+    
+    @pytest.mark.asyncio
+    async def test_entity_storage_and_retrieval(self):
+        """Test storing and retrieving entities from vector store."""
+        store = VectorMemoryStore()
+        
+        # Create test entities
+        entities = [
+            Entity(
+                id="entity_1",
+                type=EntityType.USER_PROFILE,
+                content="John, experienced Unity developer specializing in mobile games",
+                metadata={"experience": "advanced", "specialty": "mobile"},
+                confidence=0.9,
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+                user_id="test_user"
+            ),
+            Entity(
+                id="entity_2", 
+                type=EntityType.GAME_PREFERENCE,
+                content="Prefers RPG and strategy games with complex narratives",
+                metadata={"genres": ["rpg", "strategy"]},
+                confidence=0.85,
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+                user_id="test_user"
+            )
+        ]
+        
+        # Store entities
+        with patch.object(store, 'rag_system') as mock_rag:
+            mock_rag.index_document = AsyncMock()
+            await store.store_entities(entities)
+            
+            # Verify indexing was called
+            assert mock_rag.index_document.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_relevance_based_retrieval(self):
+        """Test retrieving relevant entities based on query similarity."""
+        store = VectorMemoryStore()
+        
+        # Mock relevant search results
+        mock_results = [
+            {
+                "content": "user_profile: John, experienced Unity developer",
+                "metadata": {
+                    "entity_id": "entity_1",
+                    "entity_type": "user_profile", 
+                    "user_id": "test_user",
+                    "confidence": 0.9,
+                    "created_at": datetime.now().isoformat()
+                }
+            }
+        ]
+        
+        with patch.object(store, 'rag_system') as mock_rag:
+            mock_rag.search_similar = AsyncMock(return_value=mock_results)
+            
+            entities = await store.retrieve_relevant_entities(
+                "Unity development experience", 
+                "test_user", 
+                limit=5
+            )
+            
+            assert len(entities) == 1
+            assert entities[0].type == EntityType.USER_PROFILE
+            assert "John" in entities[0].content
+            
+            # Verify search was called with correct parameters
+            mock_rag.search_similar.assert_called_with(
+                query="Unity development experience",
+                namespace="memory:test_user",
+                top_k=5,
+                similarity_threshold=0.7
+            )
 
 
 class TestConversationMemoryManager:
-    """대화 메모리 매니저 테스트"""
-    
-    @pytest.fixture
-    def memory_manager(self):
-        with patch('src.project_maestro.core.conversation_memory.create_engine'):
-            with patch('src.project_maestro.core.conversation_memory.sessionmaker'):
-                manager = ConversationMemoryManager()
-                # Mock 데이터베이스 세션
-                manager.get_db_session = Mock()
-                return manager
+    """Test the integrated conversation memory manager."""
     
     @pytest.mark.asyncio
-    async def test_create_conversation(self, memory_manager):
-        """대화 생성 테스트"""
-        user_id = "test_user_123"
-        project_id = str(uuid.uuid4())
-        title = "테스트 대화"
+    async def test_integrated_memory_flow(self, mock_llm, sample_game_conversation):
+        """Test complete memory flow across all layers."""
+        # Mock responses
+        mock_llm.ainvoke.return_value.content = json.dumps([
+            {
+                "type": "user_profile",
+                "content": "John, beginner game developer",
+                "confidence": 0.9,
+                "metadata": {}
+            }
+        ])
         
-        # Mock 데이터베이스 세션과 객체
-        mock_session = Mock()
-        mock_conversation = Mock()
-        mock_conversation.id = uuid.uuid4()
-        mock_conversation.to_dict.return_value = {
-            "id": str(mock_conversation.id),
-            "user_id": user_id,
-            "project_id": project_id,
-            "title": title,
-            "created_at": datetime.now(),
-            "updated_at": datetime.now(),
-            "is_active": True,
-            "metadata": {}
-        }
+        manager = ConversationMemoryManager(mock_llm)
+        user_id = "test_user"
+        session_id = "test_session"
         
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-        mock_session.add = Mock()
-        mock_session.commit = Mock()
-        mock_session.refresh = Mock()
+        # Store conversation
+        for message in sample_game_conversation[:4]:
+            await manager.store_message(message, user_id, session_id)
         
-        memory_manager.get_db_session.return_value = mock_session
-        
-        # 대화 생성 실행
-        result = await memory_manager.create_conversation(
-            user_id=user_id,
-            project_id=project_id,
-            title=title
+        # Get memory context
+        context = await manager.get_memory_context(
+            user_id, 
+            session_id, 
+            "I want to add character animations"
         )
         
-        # 결과 검증
-        assert result is not None
-        assert isinstance(result, ConversationInfo)
-        assert result.user_id == user_id
-        assert result.title == title
+        # Verify memory context
+        assert context.short_term_messages is not None
+        assert len(context.short_term_messages) <= 4
+        assert context.token_count > 0
         
-        # 데이터베이스 호출 검증
-        mock_session.add.assert_called_once()
-        mock_session.commit.assert_called_once()
+        # Test prompt context generation
+        prompt_context = context.to_prompt_context()
+        assert isinstance(prompt_context, str)
+        assert len(prompt_context) > 0
     
-    @pytest.mark.asyncio
-    async def test_add_message(self, memory_manager):
-        """메시지 추가 테스트"""
-        conversation_id = str(uuid.uuid4())
-        message_type = MessageType.USER
-        content = "테스트 메시지입니다."
+    @pytest.mark.asyncio 
+    async def test_user_profile_summary(self, mock_llm):
+        """Test user profile summary generation."""
+        manager = ConversationMemoryManager(mock_llm)
         
-        # Mock 데이터베이스 세션
-        mock_session = Mock()
-        mock_message = Mock()
-        mock_message.id = uuid.uuid4()
-        mock_message.to_dict.return_value = {
-            "id": str(mock_message.id),
-            "conversation_id": conversation_id,
-            "message_type": message_type.value,
-            "content": content,
-            "metadata": {},
-            "created_at": datetime.now(),
-            "message_order": 1
-        }
-        
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-        mock_session.query.return_value.filter.return_value.scalar.return_value = 0  # max_order
-        mock_session.query.return_value.filter.return_value.update = Mock()
-        mock_session.add = Mock()
-        mock_session.commit = Mock()
-        mock_session.refresh = Mock()
-        
-        memory_manager.get_db_session.return_value = mock_session
-        
-        # 임베딩 생성 Mock
-        with patch.object(memory_manager, '_generate_message_embedding') as mock_embedding:
-            mock_embedding.return_value = None
-            
-            # 메시지 추가 실행
-            result = await memory_manager.add_message(
-                conversation_id=conversation_id,
-                message_type=message_type,
-                content=content
-            )
-            
-            # 결과 검증
-            assert result is not None
-            assert isinstance(result, MessageInfo)
-            assert result.content == content
-            assert result.message_type == message_type
-            
-            # 임베딩 생성 호출 검증
-            mock_embedding.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_search_conversations(self, memory_manager):
-        """대화 검색 테스트"""
-        user_id = "test_user_123"
-        query = "테스트 검색어"
-        
-        # Mock 검색 결과
-        mock_conversation = Mock()
-        mock_conversation.id = uuid.uuid4()
-        mock_conversation.title = "테스트 대화"
-        mock_conversation.created_at = datetime.now()
-        mock_conversation.updated_at = datetime.now()
-        
-        mock_message = Mock()
-        mock_message.content = "테스트 검색어가 포함된 메시지입니다."
-        
-        # Mock 데이터베이스 쿼리
-        mock_session = Mock()
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-        mock_query_result = [(mock_conversation, mock_message)]
-        
-        mock_query = Mock()
-        mock_query.join.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = mock_query_result
-        mock_session.query.return_value = mock_query
-        
-        memory_manager.get_db_session.return_value = mock_session
-        
-        # 검색 실행
-        results = await memory_manager.search_conversations(
-            user_id=user_id,
-            query=query,
-            limit=10
-        )
-        
-        # 결과 검증
-        assert len(results) == 1
-        assert isinstance(results[0], SearchResult)
-        assert query in results[0].snippet
-    
-    @pytest.mark.asyncio
-    async def test_delete_conversation(self, memory_manager):
-        """대화 삭제 테스트"""
-        conversation_id = str(uuid.uuid4())
-        user_id = "test_user_123"
-        
-        # Mock 데이터베이스 세션
-        mock_session = Mock()
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-        mock_session.query.return_value.filter.return_value.update.return_value = 1
-        mock_session.commit = Mock()
-        
-        memory_manager.get_db_session.return_value = mock_session
-        
-        # 삭제 실행
-        result = await memory_manager.delete_conversation(
-            conversation_id=conversation_id,
-            user_id=user_id
-        )
-        
-        # 결과 검증
-        assert result is True
-        mock_session.commit.assert_called_once()
-
-
-class TestMemoryAwareAgent:
-    """메모리 인식 에이전트 테스트"""
-    
-    @pytest.fixture
-    def memory_agent(self):
-        with patch('src.project_maestro.core.memory_aware_agent.get_memory_manager'):
-            from src.project_maestro.core.agent_framework import AgentType
-            
-            agent = MemoryAwareAgent(
-                name="test_agent",
-                agent_type=AgentType.CODEX,
-                memory_enabled=True
-            )
-            
-            # Mock 메모리 매니저
-            agent.memory_manager = Mock()
-            return agent
-    
-    @pytest.mark.asyncio
-    async def test_remember_functionality(self, memory_agent):
-        """기억 기능 테스트"""
-        user_id = "test_user_123"
-        content = "에이전트가 기억해야 할 내용"
-        conversation_id = str(uuid.uuid4())
-        
-        # Mock 메모리 매니저 응답
-        mock_message = MessageInfo(
-            id=str(uuid.uuid4()),
-            conversation_id=conversation_id,
-            message_type=MessageType.AGENT,
-            content=content,
-            created_at=datetime.now(),
-            message_order=1
-        )
-        
-        memory_agent.memory_manager.add_message = AsyncMock(return_value=mock_message)
-        
-        # 기억 실행
-        result = await memory_agent.remember(
-            user_id=user_id,
-            content=content,
-            conversation_id=conversation_id
-        )
-        
-        # 결과 검증
-        assert result == conversation_id
-        memory_agent.memory_manager.add_message.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_recall_functionality(self, memory_agent):
-        """회상 기능 테스트"""
-        user_id = "test_user_123"
-        query = "이전에 논의한 내용"
-        
-        # Mock 검색 결과
-        mock_results = [
-            SearchResult(
-                conversation_id=str(uuid.uuid4()),
-                title="이전 대화",
-                relevance_score=0.8,
-                snippet="이전에 논의한 내용과 관련된 메시지",
-                created_at=datetime.now()
-            )
-        ]
-        
-        memory_agent.memory_manager.search_conversations = AsyncMock(return_value=mock_results)
-        
-        # 회상 실행
-        results = await memory_agent.recall(
-            user_id=user_id,
-            query=query
-        )
-        
-        # 결과 검증
-        assert len(results) == 1
-        assert isinstance(results[0], SearchResult)
-        memory_agent.memory_manager.search_conversations.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_get_memory_context(self, memory_agent):
-        """메모리 컨텍스트 생성 테스트"""
-        user_id = "test_user_123"
-        
-        # Mock 관련 대화 목록
-        mock_conversations = [
-            ConversationInfo(
-                id=str(uuid.uuid4()),
-                user_id=user_id,
-                title="관련 대화 1",
+        # Mock vector store with user entities
+        mock_entities = [
+            Entity(
+                id="1",
+                type=EntityType.USER_PROFILE,
+                content="John, experienced developer",
+                metadata={},
+                confidence=0.9,
+                created_at=datetime.now(),
+                updated_at=datetime.now(), 
+                user_id="test_user"
+            ),
+            Entity(
+                id="2",
+                type=EntityType.GAME_PREFERENCE,
+                content="Loves platformer games",
+                metadata={},
+                confidence=0.8,
                 created_at=datetime.now(),
                 updated_at=datetime.now(),
-                metadata={"agent_type": "codex"}
+                user_id="test_user"
             )
         ]
         
-        memory_agent.memory_manager.list_conversations = AsyncMock(return_value=mock_conversations)
-        memory_agent.memory_manager.search_conversations = AsyncMock(return_value=[])
-        
-        # 메모리 컨텍스트 생성
-        context = await memory_agent.get_memory_context(user_id=user_id)
-        
-        # 결과 검증
-        assert isinstance(context, MemoryContext)
-        assert len(context.relevant_conversations) == 1
-        
-        # 컨텍스트 문자열 변환 테스트
-        context_string = context.to_context_string()
-        assert "관련 대화 히스토리" in context_string
+        with patch.object(manager.vector_store, 'retrieve_relevant_entities') as mock_retrieve:
+            mock_retrieve.return_value = mock_entities
+            
+            profile = await manager.get_user_profile_summary("test_user")
+            
+            assert "John" in profile
+            assert "User Profile:" in profile
+            assert "user_profile" in profile.lower() or "game_preference" in profile.lower()
     
     @pytest.mark.asyncio
-    async def test_forget_functionality(self, memory_agent):
-        """망각 기능 테스트"""
-        user_id = "test_user_123"
-        conversation_id = str(uuid.uuid4())
+    async def test_memory_system_performance(self, mock_llm):
+        """Test overall memory system performance."""
+        mock_llm.ainvoke.return_value.content = "[]"  # Empty entity extraction
         
-        memory_agent.memory_manager.delete_conversation = AsyncMock(return_value=True)
+        manager = ConversationMemoryManager(mock_llm)
+        user_id = "test_user"
+        session_id = "test_session"
         
-        # 망각 실행
-        result = await memory_agent.forget(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            reason="사용자 요청"
-        )
+        # Test with varying loads
+        message_counts = [10, 50, 100]
         
-        # 결과 검증
-        assert result is True
-        memory_agent.memory_manager.delete_conversation.assert_called_once_with(
-            conversation_id=conversation_id,
-            user_id=user_id
-        )
+        for count in message_counts:
+            messages = [
+                HumanMessage(content=f"Message {i} about game development")
+                for i in range(count)
+            ]
+            
+            start_time = time.time()
+            
+            # Store all messages
+            for message in messages:
+                await manager.store_message(message, user_id, session_id)
+            
+            # Get memory context
+            context = await manager.get_memory_context(user_id, session_id, "query")
+            
+            end_time = time.time()
+            execution_time = end_time - start_time
+            
+            # Performance assertions
+            assert execution_time < 10.0  # Should complete within 10 seconds
+            assert context is not None
+            
+            print(f"Processed {count} messages in {execution_time:.2f}s")
+    
+    @pytest.mark.asyncio
+    async def test_token_efficiency_across_layers(self, mock_llm, sample_game_conversation):
+        """Test token efficiency across all memory layers."""
+        # Mock summary response
+        mock_llm.ainvoke.return_value.content = "Brief summary of conversation"
+        
+        manager = ConversationMemoryManager(mock_llm)
+        user_id = "test_user"
+        session_id = "test_session"
+        
+        # Calculate original token count
+        original_content = " ".join([msg.content for msg in sample_game_conversation])
+        original_tokens = len(original_content) // 4  # Rough estimation
+        
+        # Store conversation
+        for message in sample_game_conversation:
+            await manager.store_message(message, user_id, session_id)
+        
+        # Allow time for summarization
+        await asyncio.sleep(0.1)
+        
+        # Get memory context
+        context = await manager.get_memory_context(user_id, session_id, "test query")
+        
+        # Compare token efficiency
+        if context.token_count > 0:
+            efficiency_ratio = context.token_count / original_tokens
+            print(f"Memory system token efficiency: {context.token_count}/{original_tokens} = {efficiency_ratio:.2f}")
+            
+            # Should be more efficient for longer conversations
+            if len(sample_game_conversation) > 5:
+                assert efficiency_ratio < 0.8  # At least 20% reduction
 
 
-class TestConversationSession:
-    """대화 세션 테스트"""
-    
-    @pytest.fixture
-    def conversation_session(self):
-        user_id = "test_user_123"
-        project_id = str(uuid.uuid4())
-        
-        with patch('src.project_maestro.core.memory_aware_agent.get_memory_manager'):
-            session = ConversationSession(
-                user_id=user_id,
-                project_id=project_id
-            )
-            session.memory_manager = Mock()
-            return session
+@pytest.mark.integration
+class TestMemorySystemIntegration:
+    """Integration tests for memory system with LangGraph."""
     
     @pytest.mark.asyncio
-    async def test_start_session(self, conversation_session):
-        """세션 시작 테스트"""
-        # Mock 대화 생성 결과
-        mock_conversation = ConversationInfo(
-            id=str(uuid.uuid4()),
-            user_id=conversation_session.user_id,
-            title="테스트 세션",
-            created_at=datetime.now(),
-            updated_at=datetime.now()
+    async def test_langgraph_memory_integration(self, mock_llm):
+        """Test memory system integration with LangGraph orchestrator."""
+        from src.project_maestro.core.langgraph_orchestrator import LangGraphOrchestrator
+        
+        # Mock agents
+        mock_agents = {}
+        
+        orchestrator = LangGraphOrchestrator(
+            agents=mock_agents,
+            llm=mock_llm,
+            enable_conversation_memory=True
         )
         
-        conversation_session.memory_manager.create_conversation = AsyncMock(return_value=mock_conversation)
-        
-        # 세션 시작
-        conversation_id = await conversation_session.start_session("테스트 세션")
-        
-        # 결과 검증
-        assert conversation_id == mock_conversation.id
-        assert conversation_session.conversation_id == mock_conversation.id
+        # Verify conversation memory is initialized
+        assert orchestrator.conversation_memory is not None
+        assert isinstance(orchestrator.conversation_memory, ConversationMemoryManager)
     
     @pytest.mark.asyncio
-    async def test_add_user_message(self, conversation_session):
-        """사용자 메시지 추가 테스트"""
-        conversation_session.conversation_id = str(uuid.uuid4())
-        content = "사용자 메시지 테스트"
+    async def test_memory_context_in_state(self, mock_llm):
+        """Test memory context enhancement in MaestroState."""
+        from src.project_maestro.core.langgraph_orchestrator import LangGraphOrchestrator, MaestroState
         
-        # Mock 메시지 추가 결과
-        mock_message = MessageInfo(
-            id=str(uuid.uuid4()),
-            conversation_id=conversation_session.conversation_id,
-            message_type=MessageType.USER,
-            content=content,
-            created_at=datetime.now(),
-            message_order=1
+        orchestrator = LangGraphOrchestrator({}, mock_llm, enable_conversation_memory=True)
+        
+        # Mock state
+        state = MaestroState(
+            messages=[HumanMessage(content="Test message")],
+            current_agent="supervisor",
+            task_context={},
+            game_design_doc=None,
+            assets_generated={},
+            code_artifacts={},
+            build_status={},
+            workflow_stage="initial",
+            handoff_history=[],
+            execution_metadata={},
+            memory_context=None,
+            user_id="test_user",
+            session_id="test_session"
         )
         
-        conversation_session.memory_manager.add_message = AsyncMock(return_value=mock_message)
-        
-        # 메시지 추가
-        message_id = await conversation_session.add_user_message(content)
-        
-        # 결과 검증
-        assert message_id == mock_message.id
-        conversation_session.memory_manager.add_message.assert_called_once_with(
-            conversation_id=conversation_session.conversation_id,
-            message_type=MessageType.USER,
-            content=content
-        )
-    
-    @pytest.mark.asyncio
-    async def test_get_conversation_history(self, conversation_session):
-        """대화 히스토리 조회 테스트"""
-        conversation_session.conversation_id = str(uuid.uuid4())
-        
-        # Mock 메시지 목록
-        mock_messages = [
-            MessageInfo(
-                id=str(uuid.uuid4()),
-                conversation_id=conversation_session.conversation_id,
-                message_type=MessageType.USER,
-                content="사용자 메시지",
-                created_at=datetime.now(),
-                message_order=1
-            ),
-            MessageInfo(
-                id=str(uuid.uuid4()),
-                conversation_id=conversation_session.conversation_id,
-                message_type=MessageType.ASSISTANT,
-                content="어시스턴트 응답",
-                created_at=datetime.now(),
-                message_order=2
-            )
-        ]
-        
-        conversation_session.memory_manager.get_conversation_messages = AsyncMock(return_value=mock_messages)
-        
-        # 히스토리 조회
-        history = await conversation_session.get_conversation_history()
-        
-        # 결과 검증
-        assert len(history) == 2
-        assert all(isinstance(msg, MessageInfo) for msg in history)
-
-
-class TestPrivacyPolicyManager:
-    """프라이버시 정책 매니저 테스트"""
-    
-    @pytest.fixture
-    def privacy_manager(self):
-        with patch('src.project_maestro.core.privacy_policy.create_engine'):
-            with patch('src.project_maestro.core.privacy_policy.sessionmaker'):
-                manager = PrivacyPolicyManager()
-                manager.get_db_session = Mock()
-                return manager
-    
-    @pytest.mark.asyncio
-    async def test_grant_consent(self, privacy_manager):
-        """동의 처리 테스트"""
-        user_id = "test_user_123"
-        consent_type = ConsentType.FUNCTIONAL
-        
-        # Mock 데이터베이스 세션
-        mock_session = Mock()
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-        mock_session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
-        mock_session.add = Mock()
-        mock_session.commit = Mock()
-        mock_session.refresh = Mock()
-        
-        privacy_manager.get_db_session.return_value = mock_session
-        
-        # Mock 접근 로그
-        with patch.object(privacy_manager, '_log_data_access') as mock_log:
-            mock_log.return_value = None
-            
-            # 동의 처리
-            result = await privacy_manager.grant_consent(
-                user_id=user_id,
-                consent_type=consent_type,
-                granted=True
-            )
-            
-            # 결과 검증
-            assert result is not None
-            mock_session.add.assert_called_once()
-            mock_session.commit.assert_called_once()
-            mock_log.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_check_consent(self, privacy_manager):
-        """동의 상태 확인 테스트"""
-        user_id = "test_user_123"
-        consent_type = ConsentType.ANALYTICS
-        
-        # Mock 동의 기록
-        mock_consent = Mock()
-        mock_consent.granted = True
-        
-        mock_session = Mock()
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-        mock_session.query.return_value.filter.return_value.order_by.return_value.first.return_value = mock_consent
-        
-        privacy_manager.get_db_session.return_value = mock_session
-        
-        # 동의 상태 확인
-        result = await privacy_manager.check_consent(
-            user_id=user_id,
-            consent_type=consent_type
+        # Mock memory context
+        mock_context = MemoryContext(
+            short_term_messages=[],
+            summary="Test summary",
+            relevant_entities=[],
+            token_count=100
         )
         
-        # 결과 검증
-        assert result is True
-    
-    @pytest.mark.asyncio
-    async def test_request_data_deletion(self, privacy_manager):
-        """데이터 삭제 요청 테스트"""
-        user_id = "test_user_123"
-        data_categories = [DataCategory.CONVERSATION, DataCategory.USER_PROFILE]
-        
-        # Mock 데이터베이스 세션
-        mock_session = Mock()
-        mock_deletion_request = Mock()
-        mock_deletion_request.id = uuid.uuid4()
-        
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-        mock_session.add = Mock()
-        mock_session.commit = Mock()
-        mock_session.refresh = Mock()
-        
-        privacy_manager.get_db_session.return_value = mock_session
-        
-        # Mock 백그라운드 처리
-        with patch('asyncio.create_task') as mock_task:
-            mock_task.return_value = None
+        with patch.object(orchestrator.conversation_memory, 'get_memory_context') as mock_get_context:
+            mock_get_context.return_value = mock_context
             
-            # 삭제 요청
-            request_id = await privacy_manager.request_data_deletion(
-                user_id=user_id,
-                request_type="delete_all",
-                data_categories=data_categories
-            )
+            enhanced_state = await orchestrator._enhance_state_with_memory(state)
             
-            # 결과 검증
-            assert request_id is not None
-            mock_session.add.assert_called_once()
-            mock_task.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_export_user_data(self, privacy_manager):
-        """데이터 내보내기 테스트"""
-        user_id = "test_user_123"
-        
-        # Mock 메모리 매니저
-        mock_memory_manager = Mock()
-        mock_conversations = [
-            ConversationInfo(
-                id=str(uuid.uuid4()),
-                user_id=user_id,
-                title="테스트 대화",
-                created_at=datetime.now(),
-                updated_at=datetime.now()
-            )
-        ]
-        mock_memory_manager.list_conversations = AsyncMock(return_value=mock_conversations)
-        mock_memory_manager.get_conversation_messages = AsyncMock(return_value=[])
-        
-        privacy_manager._get_memory_manager = Mock(return_value=mock_memory_manager)
-        
-        # Mock 동의 정보
-        with patch.object(privacy_manager, 'get_user_consents') as mock_consents:
-            mock_consents.return_value = []
-            
-            # Mock 데이터베이스 세션
-            mock_session = Mock()
-            mock_session.__enter__ = Mock(return_value=mock_session)
-            mock_session.__exit__ = Mock(return_value=None)
-            mock_session.query.return_value.filter.return_value.all.return_value = []
-            
-            privacy_manager.get_db_session.return_value = mock_session
-            
-            # Mock 접근 로그
-            with patch.object(privacy_manager, '_log_data_access') as mock_log:
-                mock_log.return_value = None
-                
-                # 데이터 내보내기
-                result = await privacy_manager.export_user_data(user_id)
-                
-                # 결과 검증
-                assert result is not None
-                assert len(result.conversations) == 1
-                mock_log.assert_called_once()
-
-
-# 통합 테스트
-class TestConversationMemoryIntegration:
-    """대화 메모리 시스템 통합 테스트"""
-    
-    @pytest.mark.asyncio
-    async def test_full_conversation_flow(self):
-        """전체 대화 흐름 통합 테스트"""
-        user_id = "integration_test_user"
-        
-        # Mock 모든 의존성
-        with patch('src.project_maestro.core.conversation_memory.create_engine'):
-            with patch('src.project_maestro.core.conversation_memory.sessionmaker'):
-                with patch('src.project_maestro.core.memory_aware_agent.get_memory_manager'):
-                    
-                    # 1. 대화 세션 시작
-                    session = ConversationSession(user_id=user_id)
-                    session.memory_manager = Mock()
-                    
-                    mock_conversation = ConversationInfo(
-                        id=str(uuid.uuid4()),
-                        user_id=user_id,
-                        title="통합 테스트 대화",
-                        created_at=datetime.now(),
-                        updated_at=datetime.now()
-                    )
-                    
-                    session.memory_manager.create_conversation = AsyncMock(return_value=mock_conversation)
-                    session.memory_manager.add_message = AsyncMock(return_value=Mock())
-                    
-                    # 세션 시작
-                    conversation_id = await session.start_session("통합 테스트 대화")
-                    assert conversation_id is not None
-                    
-                    # 2. 사용자 메시지 추가
-                    await session.add_user_message("안녕하세요, 테스트입니다.")
-                    
-                    # 3. 에이전트 응답 추가
-                    await session.add_agent_response(
-                        agent_name="test_agent",
-                        content="안녕하세요! 도움이 필요하시면 말씀해주세요.",
-                        metadata={"response_type": "greeting"}
-                    )
-                    
-                    # 4. 세션 종료
-                    result = await session.end_session()
-                    assert result is True
-                    
-                    # Mock 호출 검증
-                    assert session.memory_manager.create_conversation.called
-                    assert session.memory_manager.add_message.call_count == 3  # user + agent + system
+            # Verify memory context was added
+            assert enhanced_state["memory_context"] is not None
+            assert enhanced_state["memory_context"]["summary"] == "Test summary"
+            assert enhanced_state["memory_context"]["token_count"] == 100
 
 
 if __name__ == "__main__":
-    # 테스트 실행
-    pytest.main([__file__, "-v"])
+    # Run performance benchmarks
+    asyncio.run(pytest.main([__file__, "-v", "--tb=short"]))
