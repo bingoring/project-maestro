@@ -9,12 +9,17 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Type, Union, Callable
 from pydantic import BaseModel, Field
 
-from langchain.agents import AgentExecutor
-from langchain.agents.agent import BaseMultiActionAgent, BaseSingleActionAgent
-from langchain.schema import AgentAction, AgentFinish
-from langchain.tools import BaseTool
-from langchain.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models import BaseLanguageModel
+from langchain_core.tools import BaseTool
+from langchain_core.callbacks.base import BaseCallbackHandler
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
+
+# Modern LangChain imports
+from langgraph.prebuilt import create_react_agent
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 
@@ -93,31 +98,29 @@ class MaestroCallbackHandler(BaseCallbackHandler):
         self.agent_name = agent_name
         self.logger = get_logger(f"agent.{agent_name}")
         
-    def on_agent_action(
+    def on_llm_start(
         self, 
-        action: AgentAction, 
+        serialized: Dict[str, Any], 
+        prompts: List[str],
         **kwargs: Any
     ) -> Any:
-        """Called when agent takes an action."""
+        """Called when LLM starts generating."""
         self.logger.info(
-            "Agent action",
+            "LLM started",
             agent=self.agent_name,
-            tool=action.tool,
-            tool_input=action.tool_input,
-            log=action.log
+            prompts_count=len(prompts)
         )
         
-    def on_agent_finish(
+    def on_llm_end(
         self, 
-        finish: AgentFinish, 
+        response,
         **kwargs: Any
     ) -> Any:
-        """Called when agent finishes execution."""
+        """Called when LLM finishes generating."""
         self.logger.info(
-            "Agent finished",
+            "LLM finished",
             agent=self.agent_name,
-            output=finish.return_values,
-            log=finish.log
+            response_length=len(str(response))
         )
         
     def on_tool_start(
@@ -161,7 +164,12 @@ class MaestroCallbackHandler(BaseCallbackHandler):
 
 
 class BaseAgent(ABC, AgentLoggerMixin):
-    """Base class for all Project Maestro agents."""
+    """
+    Modern base class for all Project Maestro agents using LCEL and Runnable patterns.
+    
+    This class provides a foundation for building agents that leverage LangChain's
+    Expression Language (LCEL) for composable, streaming-capable AI workflows.
+    """
     
     def __init__(
         self,
@@ -188,38 +196,53 @@ class BaseAgent(ABC, AgentLoggerMixin):
         # Create callback handler
         self.callback_handler = MaestroCallbackHandler(self.name)
         
-        # Initialize agent executor
-        self._agent_executor: Optional[AgentExecutor] = None
+        # Initialize modern agent graph (replaces AgentExecutor)
+        self._agent_graph = None
+        self._runnable_chain = None
         
     def _create_default_llm(self) -> BaseLanguageModel:
-        """Create default LLM based on configuration."""
+        """Create default LLM with modern configuration."""
         if settings.openai_api_key:
             return ChatOpenAI(
                 api_key=settings.openai_api_key,
-                model="gpt-4-turbo-preview",
+                model="gpt-4o",  # Updated to latest model
                 temperature=0.1,
-                callbacks=[self.callback_handler]
+                callbacks=[self.callback_handler],
+                streaming=True  # Enable streaming by default
             )
         elif settings.anthropic_api_key:
             return ChatAnthropic(
                 api_key=settings.anthropic_api_key,
-                model="claude-3-sonnet-20240229",
+                model="claude-3-5-sonnet-20241022",  # Updated to latest model
                 temperature=0.1,
-                callbacks=[self.callback_handler]
+                callbacks=[self.callback_handler],
+                streaming=True  # Enable streaming by default
             )
         else:
             raise ValueError("No LLM API key configured")
             
     @property
-    def agent_executor(self) -> AgentExecutor:
-        """Get or create agent executor."""
-        if not self._agent_executor:
-            self._agent_executor = self._create_agent_executor()
-        return self._agent_executor
+    def agent_graph(self):
+        """Get or create modern agent graph using LangGraph."""
+        if not self._agent_graph:
+            self._agent_graph = self._create_agent_graph()
+        return self._agent_graph
+        
+    @property  
+    def runnable_chain(self):
+        """Get or create LCEL runnable chain."""
+        if not self._runnable_chain:
+            self._runnable_chain = self._create_runnable_chain()
+        return self._runnable_chain
         
     @abstractmethod
-    def _create_agent_executor(self) -> AgentExecutor:
-        """Create the LangChain agent executor."""
+    def _create_agent_graph(self):
+        """Create modern LangGraph agent (replaces AgentExecutor)."""
+        pass
+        
+    @abstractmethod
+    def _create_runnable_chain(self):
+        """Create LCEL runnable chain for this agent."""
         pass
         
     @abstractmethod
@@ -229,12 +252,20 @@ class BaseAgent(ABC, AgentLoggerMixin):
         
     @abstractmethod
     async def execute_task(self, task: AgentTask) -> Dict[str, Any]:
-        """Execute a specific task."""
+        """Execute a specific task using modern LCEL patterns."""
         pass
         
+    async def stream_task(self, task: AgentTask):
+        """Stream task execution for real-time feedback."""
+        async for chunk in self.agent_graph.astream(
+            {"messages": [("human", f"Task: {task.action} with params: {task.parameters}")]},
+            config={"configurable": {"thread_id": task.id}}
+        ):
+            yield chunk
+            
     @with_error_handling("base_agent", "process_task", max_attempts=2, recovery_strategy=RecoveryStrategy.RETRY)
     async def process_task(self, task: AgentTask) -> AgentTask:
-        """Process a task with error handling and metrics."""
+        """Process a task with modern error handling and metrics."""
         self.current_task = task
         task.started_at = datetime.now()
         task.status = AgentStatus.RUNNING
@@ -257,7 +288,7 @@ class BaseAgent(ABC, AgentLoggerMixin):
         start_time = datetime.now()
         
         try:
-            # Set timeout if specified
+            # Use modern async execution with timeout
             if task.timeout:
                 result = await asyncio.wait_for(
                     self.execute_task(task),
@@ -291,7 +322,7 @@ class BaseAgent(ABC, AgentLoggerMixin):
             )
             
         except Exception as e:
-            # Handle task failure
+            # Handle task failure with enhanced error context
             task.error = str(e)
             task.status = AgentStatus.FAILED
             task.completed_at = datetime.now()
@@ -305,7 +336,7 @@ class BaseAgent(ABC, AgentLoggerMixin):
             agent_monitor.record_agent_error(self.name, type(e).__name__, str(e))
             metrics_collector.record_timing(
                 "agent.task.duration",
-                execution_time * 1000,  # Convert to milliseconds
+                execution_time * 1000,
                 tags={"agent_name": self.name, "agent_type": self.agent_type.value, "success": "false"}
             )
             metrics_collector.increment_counter(
@@ -337,12 +368,18 @@ class BaseAgent(ABC, AgentLoggerMixin):
         return task.agent_type == self.agent_type
         
     def get_status(self) -> Dict[str, Any]:
-        """Get current agent status."""
+        """Get current agent status with enhanced metrics."""
         return {
             "name": self.name,
             "type": self.agent_type.value,
             "status": self.status.value,
             "current_task": self.current_task.id if self.current_task else None,
+            "capabilities": {
+                "streaming": True,
+                "lcel_enabled": True,
+                "runnable_interface": True,
+                "langgraph_powered": True
+            },
             "metrics": {
                 "task_count": self.metrics.task_count,
                 "success_rate": (
