@@ -82,6 +82,10 @@ class LangGraphOrchestrator:
         self.llm = llm
         self.memory_saver = memory_saver or MemorySaver()
         
+        # Initialize intent classifier for enterprise workflows
+        from ..core.intent_classifier import IntentClassifier
+        self.intent_classifier = IntentClassifier(llm)
+        
         # Define agent capabilities for intelligent routing
         self.agent_capabilities = {
             "orchestrator": AgentCapability(
@@ -116,6 +120,11 @@ class LangGraphOrchestrator:
                 specializations=["unity_integration", "builds", "deployment"],
                 prerequisites=["csharp_scripts", "visual_assets"],
                 outputs=["unity_project", "game_builds"]
+            ),
+            "query": AgentCapability(
+                agent_name="query",
+                specializations=["enterprise_search", "knowledge_retrieval", "information_synthesis"],
+                outputs=["search_results", "knowledge_summaries", "information_analysis"]
             )
         }
         
@@ -123,8 +132,8 @@ class LangGraphOrchestrator:
         self.graph = self._build_orchestration_graph()
         
     def _build_orchestration_graph(self) -> StateGraph:
-        """Build the main LangGraph orchestration graph."""
-        logger.info("Building LangGraph orchestration graph")
+        """Build the main LangGraph orchestration graph with enterprise support."""
+        logger.info("Building enhanced LangGraph orchestration graph with enterprise support")
         
         # Initialize the graph with enhanced state
         graph = StateGraph(MaestroState)
@@ -141,11 +150,37 @@ class LangGraphOrchestrator:
         graph.add_node("progress_tracker", self._create_progress_tracker_node())
         graph.add_node("quality_gate", self._create_quality_gate_node())
         
-        # Define graph edges and conditional routing
-        graph.add_edge(START, "workflow_planner")
+        # ====== NEW: Enterprise workflow nodes ======
+        graph.add_node("intent_analyzer", self._create_intent_analyzer_node())
+        graph.add_node("enterprise_router", self._create_enterprise_router_node())
+        graph.add_node("knowledge_analyzer", self._create_knowledge_analyzer_node())
+        
+        # ====== Define graph edges and conditional routing ======
+        
+        # Start with intent analysis for all queries
+        graph.add_edge(START, "intent_analyzer")
+        
+        # Route from intent analyzer based on query type
+        graph.add_conditional_edges(
+            "intent_analyzer",
+            self._route_from_intent_analysis,
+            ["enterprise_router", "workflow_planner", "supervisor"]
+        )
+        
+        # Enterprise routing for knowledge queries
+        graph.add_conditional_edges(
+            "enterprise_router", 
+            self._route_enterprise_query,
+            ["query", "knowledge_analyzer", "supervisor", END]
+        )
+        
+        # Knowledge analyzer for moderate complexity queries
+        graph.add_edge("knowledge_analyzer", "supervisor")
+        
+        # Traditional workflow routing (preserved)
         graph.add_edge("workflow_planner", "supervisor")
         
-        # Add conditional edges for agent routing
+        # Add conditional edges for agent routing from supervisor
         graph.add_conditional_edges(
             "supervisor",
             self._route_to_agent,
@@ -167,8 +202,195 @@ class LangGraphOrchestrator:
         # Compile with memory for persistence
         compiled_graph = graph.compile(checkpointer=self.memory_saver)
         
-        logger.info("LangGraph orchestration graph compiled successfully")
+        logger.info("Enhanced LangGraph orchestration graph compiled successfully")
         return compiled_graph
+
+        
+    def _create_intent_analyzer_node(self):
+        """Create intent analysis node for routing queries appropriately."""
+        async def intent_analyzer(state: MaestroState) -> Command:
+            logger.info("Analyzing query intent and complexity")
+            
+            # Get the user's query
+            messages = state.get("messages", [])
+            if not messages:
+                return Command(
+                    update={"workflow_stage": "error", "messages": [AIMessage(content="No input provided")]},
+                    goto=END
+                )
+                
+            user_query = messages[0].content if messages else ""
+            
+            try:
+                # Analyze intent and complexity
+                intent_analysis = await self.intent_classifier.classify_query(user_query)
+                
+                # Store analysis in state
+                updated_state = dict(state)
+                updated_state["task_context"] = {
+                    "original_query": user_query,
+                    "intent_analysis": intent_analysis.__dict__,
+                    "routing_decision": "pending"
+                }
+                updated_state["workflow_stage"] = "intent_analyzed"
+                
+                analysis_message = AIMessage(
+                    content=f"Intent: {intent_analysis.intent.value}, Complexity: {intent_analysis.complexity.value}, Confidence: {intent_analysis.confidence:.2f}",
+                    name="intent_analyzer"
+                )
+                
+                return Command(
+                    update={
+                        **updated_state,
+                        "messages": [analysis_message]
+                    },
+                    goto="enterprise_router"  # Will be properly routed by conditional edge
+                )
+                
+            except Exception as e:
+                logger.error(f"Intent analysis failed: {e}")
+                return Command(
+                    update={
+                        "workflow_stage": "error",
+                        "messages": [AIMessage(content=f"Intent analysis failed: {str(e)}")]
+                    },
+                    goto=END
+                )
+                
+        return intent_analyzer
+        
+    def _create_enterprise_router_node(self):
+        """Create enterprise query router for complexity-based routing."""
+        async def enterprise_router(state: MaestroState) -> Command:
+            logger.info("Routing enterprise query based on complexity")
+            
+            task_context = state.get("task_context", {})
+            intent_analysis = task_context.get("intent_analysis", {})
+            
+            if not intent_analysis:
+                logger.warning("No intent analysis found, defaulting to supervisor")
+                return Command(goto="supervisor")
+            
+            complexity = intent_analysis.get("complexity", "simple")
+            intent = intent_analysis.get("intent", "general_chat")
+            
+            # Update routing decision
+            updated_context = dict(task_context)
+            updated_context["routing_decision"] = f"enterprise_query_{complexity}"
+            
+            routing_message = AIMessage(
+                content=f"Routing enterprise query (complexity: {complexity})",
+                name="enterprise_router"
+            )
+            
+            return Command(
+                update={
+                    "task_context": updated_context,
+                    "messages": [routing_message]
+                },
+                goto="pending"  # Will be determined by conditional routing
+            )
+            
+        return enterprise_router
+        
+    def _create_knowledge_analyzer_node(self):
+        """Create knowledge analyzer for moderate complexity queries."""
+        async def knowledge_analyzer(state: MaestroState) -> Command:
+            logger.info("Performing knowledge analysis for moderate complexity query")
+            
+            task_context = state.get("task_context", {})
+            original_query = task_context.get("original_query", "")
+            
+            # Perform enhanced analysis
+            analysis_result = f"""Knowledge Analysis for: {original_query}
+
+This query requires moderate complexity handling involving:
+1. Multi-source information gathering
+2. Context synthesis from enterprise systems
+3. Analysis and structured response
+
+Preparing to delegate to Query Agent with enhanced capabilities."""
+            
+            analysis_message = AIMessage(
+                content=analysis_result,
+                name="knowledge_analyzer"
+            )
+            
+            # Enhance task context for query agent
+            enhanced_context = dict(task_context)
+            enhanced_context["analysis_level"] = "moderate"
+            enhanced_context["recommended_tier"] = 2
+            enhanced_context["requires_synthesis"] = True
+            
+            return Command(
+                update={
+                    "task_context": enhanced_context,
+                    "workflow_stage": "knowledge_analyzed",
+                    "messages": [analysis_message]
+                },
+                goto="supervisor"
+            )
+            
+        return knowledge_analyzer
+        
+    def _route_from_intent_analysis(self, state: MaestroState) -> str:
+        """Route based on intent analysis results."""
+        task_context = state.get("task_context", {})
+        intent_analysis = task_context.get("intent_analysis", {})
+        
+        if not intent_analysis:
+            logger.warning("No intent analysis found, routing to supervisor")
+            return "supervisor"
+            
+        intent = intent_analysis.get("intent", "general_chat")
+        complexity = intent_analysis.get("complexity", "simple")
+        
+        logger.info(f"Routing decision: intent={intent}, complexity={complexity}")
+        
+        # Route game development queries to traditional workflow
+        if intent == "game_development":
+            return "workflow_planner"
+            
+        # Route enterprise search and knowledge queries
+        elif intent in ["enterprise_search", "project_info", "technical_support"]:
+            return "enterprise_router"
+            
+        # Route workflow automation to supervisor (complex coordination)
+        elif intent in ["workflow_automation", "complex_analysis"]:
+            return "supervisor"
+            
+        # Default routing for general chat and unknown intents
+        else:
+            return "supervisor"
+            
+    def _route_enterprise_query(self, state: MaestroState) -> str:
+        """Route enterprise queries based on complexity."""
+        task_context = state.get("task_context", {})
+        intent_analysis = task_context.get("intent_analysis", {})
+        
+        if not intent_analysis:
+            return "supervisor"
+            
+        complexity = intent_analysis.get("complexity", "simple")
+        confidence = intent_analysis.get("confidence", 0.5)
+        
+        logger.info(f"Enterprise routing: complexity={complexity}, confidence={confidence}")
+        
+        # Simple queries go directly to query agent
+        if complexity == "simple" and confidence > 0.7:
+            return "query"
+            
+        # Moderate complexity goes through knowledge analyzer first
+        elif complexity == "moderate":
+            return "knowledge_analyzer"
+            
+        # Complex and expert queries need supervisor orchestration
+        elif complexity in ["complex", "expert"]:
+            return "supervisor"
+            
+        # Low confidence queries get handled by query agent with fallback
+        else:
+            return "query"
         
     def _create_agent_node(self, agent_name: str, agent: BaseAgent):
         """Create a LangGraph node for a specific agent."""
@@ -637,6 +859,135 @@ Always explain your routing decisions and provide clear task descriptions to age
                     "thread_id": thread_id
                 }
             }
+
+        
+    async def execute_enterprise_query(
+        self,
+        query: str,
+        user_context: Dict = None,
+        thread_id: Optional[str] = None,
+        stream_mode: str = "updates"
+    ):
+        """Execute an enterprise knowledge query using the enhanced orchestration."""
+        if not thread_id:
+            thread_id = f"enterprise_{uuid.uuid4()}"
+            
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        logger.info(f"Starting enterprise query execution for thread {thread_id}")
+        
+        initial_state = {
+            "messages": [HumanMessage(content=query)],
+            "workflow_stage": "enterprise_query_initiated",
+            "current_agent": "intent_analyzer",
+            "task_context": {
+                "query_type": "enterprise",
+                "user_context": user_context or {},
+                "initiated_at": datetime.now().isoformat()
+            },
+            "execution_metadata": {
+                "started_at": datetime.now().isoformat(),
+                "thread_id": thread_id,
+                "workflow_type": "enterprise_query"
+            }
+        }
+        
+        try:
+            async for chunk in self.graph.astream(
+                initial_state,
+                config=config,
+                stream_mode=stream_mode
+            ):
+                yield chunk
+                
+        except Exception as e:
+            logger.error(f"Enterprise query execution failed: {e}")
+            yield {
+                "error": {
+                    "type": type(e).__name__,
+                    "message": str(e),
+                    "thread_id": thread_id,
+                    "workflow_type": "enterprise_query"
+                }
+            }
+            
+    async def execute_hybrid_workflow(
+        self,
+        request: str,
+        workflow_type: Literal["game_development", "enterprise_query", "hybrid"] = "hybrid",
+        thread_id: Optional[str] = None,
+        stream_mode: str = "updates"
+    ):
+        """Execute a hybrid workflow that can handle both game development and enterprise queries."""
+        if not thread_id:
+            thread_id = f"hybrid_{uuid.uuid4()}"
+            
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        logger.info(f"Starting hybrid workflow execution for thread {thread_id}")
+        
+        initial_state = {
+            "messages": [HumanMessage(content=request)],
+            "workflow_stage": "hybrid_workflow_initiated",
+            "current_agent": "intent_analyzer",
+            "task_context": {
+                "workflow_type": workflow_type,
+                "request": request,
+                "initiated_at": datetime.now().isoformat()
+            },
+            "execution_metadata": {
+                "started_at": datetime.now().isoformat(),
+                "thread_id": thread_id,
+                "workflow_type": "hybrid"
+            }
+        }
+        
+        try:
+            async for chunk in self.graph.astream(
+                initial_state,
+                config=config,
+                stream_mode=stream_mode
+            ):
+                yield chunk
+                
+        except Exception as e:
+            logger.error(f"Hybrid workflow execution failed: {e}")
+            yield {
+                "error": {
+                    "type": type(e).__name__,
+                    "message": str(e),
+                    "thread_id": thread_id,
+                    "workflow_type": "hybrid"
+                }
+            }
+            
+    async def get_enterprise_capabilities(self) -> Dict[str, Any]:
+        """Get information about enterprise integration capabilities."""
+        from ..integrations.enterprise_connectors import get_enterprise_manager
+        
+        enterprise_manager = get_enterprise_manager()
+        
+        # Test connectivity to all systems
+        connection_status = await enterprise_manager.test_all_connections()
+        
+        capabilities = {
+            "supported_systems": list(enterprise_manager.connectors.keys()),
+            "connection_status": connection_status,
+            "query_types_supported": [
+                "enterprise_search",
+                "project_info", 
+                "technical_support",
+                "workflow_automation",
+                "complex_analysis"
+            ],
+            "complexity_levels": ["simple", "moderate", "complex", "expert"],
+            "cascading_enabled": True,
+            "intent_classification": True,
+            "multi_agent_coordination": True,
+            "rag_integration": True
+        }
+        
+        return capabilities
             
     async def get_workflow_state(self, thread_id: str) -> Dict[str, Any]:
         """Get current state of a workflow."""
