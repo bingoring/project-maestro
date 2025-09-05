@@ -6,12 +6,17 @@ import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from langchain.agents import AgentExecutor, create_openai_functions_agent
-from langchain.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool, StructuredTool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langgraph.prebuilt import create_react_agent
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.pydantic_v1 import BaseModel, Field
 
 from ..core.agent_framework import BaseAgent, AgentType, AgentTask
@@ -608,8 +613,8 @@ class BuilderAgent(BaseAgent):
             BuilderTools.create_import_assets_tool(self),
         ]
         
-    def _create_agent_executor(self) -> AgentExecutor:
-        """Create the LangChain agent executor for building."""
+    def _create_agent_graph(self):
+        """Create the LangGraph agent for building."""
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", self.get_system_prompt()),
@@ -617,15 +622,26 @@ class BuilderAgent(BaseAgent):
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
         
-        agent = create_openai_functions_agent(self.llm, self.tools, prompt)
+        memory = MemorySaver()
         
-        return AgentExecutor(
-            agent=agent,
+        agent_graph = create_react_agent(
+            model=self.llm,
             tools=self.tools,
-            verbose=True,
-            handle_parsing_errors=True,
-            callbacks=[self.callback_handler]
+            state_modifier=prompt,
+            checkpointer=memory
         )
+        
+        return agent_graph
+        
+    def _create_runnable_chain(self):
+        """Create LCEL runnable chain for this agent."""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", self.get_system_prompt()),
+            ("human", "{input}")
+        ])
+        
+        chain = prompt | self.llm | StrOutputParser()
+        return chain
         
     def get_system_prompt(self) -> str:
         """Get the system prompt for the Builder agent."""
@@ -686,11 +702,12 @@ class BuilderAgent(BaseAgent):
         elif action == "import_assets":
             return await self._handle_import_assets(params)
         else:
-            # Use agent executor for complex build tasks
-            result = await self.agent_executor.ainvoke({
-                "input": f"Build task: {action} with parameters: {params}"
-            })
-            return {"result": result["output"]}
+            # Use agent graph for complex build tasks
+            result = await self.agent_graph.ainvoke(
+                {"messages": [HumanMessage(content=f"Build task: {action} with parameters: {params}")]},
+                config={"configurable": {"thread_id": f"builder_{params.get('task_id', 'default')}"}}
+            )
+            return {"result": result["messages"][-1].content}
             
     async def _handle_build_game(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle complete game building."""
