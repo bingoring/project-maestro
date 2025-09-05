@@ -98,6 +98,65 @@ class Settings(BaseSettings):
     agent_retry_attempts: int = Field(default=3)
     agent_retry_delay: float = Field(default=1.0)
     
+    # ====== Enterprise Knowledge Management ======
+    
+    # Enterprise Systems Integration
+    jira_enabled: bool = Field(default=False)
+    jira_base_url: Optional[str] = Field(default=None)
+    jira_username: Optional[str] = Field(default=None)
+    jira_api_token: Optional[str] = Field(default=None)
+    jira_project_keys: List[str] = Field(default_factory=list)
+    
+    slack_enabled: bool = Field(default=False)
+    slack_bot_token: Optional[str] = Field(default=None)
+    slack_app_token: Optional[str] = Field(default=None)
+    slack_channels: List[str] = Field(default_factory=list)
+    slack_max_history_days: int = Field(default=30)
+    
+    confluence_enabled: bool = Field(default=False)
+    confluence_base_url: Optional[str] = Field(default=None)
+    confluence_username: Optional[str] = Field(default=None)
+    confluence_api_token: Optional[str] = Field(default=None)
+    confluence_space_keys: List[str] = Field(default_factory=list)
+    
+    # RAG System Configuration
+    rag_enabled: bool = Field(default=True)
+    rag_vector_store_type: str = Field(default="chroma")  # chroma, pinecone, weaviate
+    rag_embedding_model: str = Field(default="text-embedding-ada-002")
+    rag_chunk_size: int = Field(default=1000)
+    rag_chunk_overlap: int = Field(default=200)
+    rag_max_results: int = Field(default=10)
+    rag_similarity_threshold: float = Field(default=0.7)
+    
+    # Vector Database Settings
+    chroma_host: str = Field(default="localhost")
+    chroma_port: int = Field(default=8000)
+    chroma_collection_name: str = Field(default="maestro_enterprise")
+    
+    pinecone_api_key: Optional[str] = Field(default=None)
+    pinecone_environment: str = Field(default="us-west1-gcp")
+    pinecone_index_name: str = Field(default="maestro-enterprise")
+    
+    # Query Agent Configuration
+    query_agent_enabled: bool = Field(default=True)
+    query_agent_model: str = Field(default="gpt-4-turbo-preview")
+    query_agent_temperature: float = Field(default=0.1)
+    query_agent_max_tokens: int = Field(default=1000)
+    query_cascading_enabled: bool = Field(default=True)
+    query_complexity_threshold: float = Field(default=0.6)
+    
+    # Intent Analysis Configuration
+    intent_analysis_enabled: bool = Field(default=True)
+    intent_analysis_model: str = Field(default="gpt-3.5-turbo")
+    intent_confidence_threshold: float = Field(default=0.8)
+    intent_fallback_to_general: bool = Field(default=True)
+    
+    # Enterprise Data Sync Settings
+    enterprise_sync_interval_hours: int = Field(default=24)
+    enterprise_sync_batch_size: int = Field(default=100)
+    enterprise_data_retention_days: int = Field(default=90)
+    enterprise_sync_enabled: bool = Field(default=True)
+    
     # Project Paths
     project_root: Path = Field(default_factory=lambda: Path(__file__).parent.parent.parent.parent)
     data_dir: Path = Field(default_factory=lambda: Path("/tmp/maestro_data"))
@@ -132,6 +191,28 @@ class Settings(BaseSettings):
             raise ValueError(f"Storage type must be one of: {allowed}")
         return v
         
+    @validator("rag_vector_store_type")
+    def validate_vector_store_type(cls, v):
+        """Validate vector store type."""
+        allowed = ["chroma", "pinecone", "weaviate"]
+        if v not in allowed:
+            raise ValueError(f"RAG vector store type must be one of: {allowed}")
+        return v
+        
+    @validator("jira_base_url", "confluence_base_url", pre=True, always=True)
+    def validate_enterprise_urls(cls, v):
+        """Validate enterprise system URLs."""
+        if v and not v.startswith(("http://", "https://")):
+            raise ValueError("Enterprise system URLs must start with http:// or https://")
+        return v
+        
+    @validator("rag_similarity_threshold", "query_complexity_threshold", "intent_confidence_threshold")
+    def validate_threshold_values(cls, v):
+        """Validate threshold values are between 0 and 1."""
+        if not 0 <= v <= 1:
+            raise ValueError("Threshold values must be between 0 and 1")
+        return v
+        
     def is_production(self) -> bool:
         """Check if running in production."""
         return self.environment == "production"
@@ -161,6 +242,89 @@ def validate_ai_services():
         
     return len(missing_keys) == 0
 
+def validate_enterprise_services():
+    """Validate enterprise system configurations."""
+    issues = []
+    
+    # Jira validation
+    if settings.jira_enabled:
+        if not settings.jira_base_url:
+            issues.append("JIRA_BASE_URL is required when Jira is enabled")
+        if not settings.jira_username:
+            issues.append("JIRA_USERNAME is required when Jira is enabled")
+        if not settings.jira_api_token:
+            issues.append("JIRA_API_TOKEN is required when Jira is enabled")
+    
+    # Slack validation
+    if settings.slack_enabled:
+        if not settings.slack_bot_token:
+            issues.append("SLACK_BOT_TOKEN is required when Slack is enabled")
+    
+    # Confluence validation
+    if settings.confluence_enabled:
+        if not settings.confluence_base_url:
+            issues.append("CONFLUENCE_BASE_URL is required when Confluence is enabled")
+        if not settings.confluence_username:
+            issues.append("CONFLUENCE_USERNAME is required when Confluence is enabled")
+        if not settings.confluence_api_token:
+            issues.append("CONFLUENCE_API_TOKEN is required when Confluence is enabled")
+    
+    # Vector database validation
+    if settings.rag_enabled:
+        if settings.rag_vector_store_type == "pinecone" and not settings.pinecone_api_key:
+            issues.append("PINECONE_API_KEY is required when using Pinecone vector store")
+    
+    if issues and settings.is_production():
+        raise ValueError(f"Enterprise configuration issues: {'; '.join(issues)}")
+        
+    return len(issues) == 0
+
+
+def get_enterprise_config():
+    """Get enterprise system configuration for easy access."""
+    return {
+        "jira": {
+            "enabled": settings.jira_enabled,
+            "base_url": settings.jira_base_url,
+            "username": settings.jira_username,
+            "api_token": settings.jira_api_token,
+            "project_keys": settings.jira_project_keys,
+        },
+        "slack": {
+            "enabled": settings.slack_enabled,
+            "bot_token": settings.slack_bot_token,
+            "app_token": settings.slack_app_token,
+            "channels": settings.slack_channels,
+            "max_history_days": settings.slack_max_history_days,
+        },
+        "confluence": {
+            "enabled": settings.confluence_enabled,
+            "base_url": settings.confluence_base_url,
+            "username": settings.confluence_username,
+            "api_token": settings.confluence_api_token,
+            "space_keys": settings.confluence_space_keys,
+        },
+        "rag": {
+            "enabled": settings.rag_enabled,
+            "vector_store_type": settings.rag_vector_store_type,
+            "embedding_model": settings.rag_embedding_model,
+            "chunk_size": settings.rag_chunk_size,
+            "chunk_overlap": settings.rag_chunk_overlap,
+            "max_results": settings.rag_max_results,
+            "similarity_threshold": settings.rag_similarity_threshold,
+        },
+        "query_agent": {
+            "enabled": settings.query_agent_enabled,
+            "model": settings.query_agent_model,
+            "temperature": settings.query_agent_temperature,
+            "max_tokens": settings.query_agent_max_tokens,
+            "cascading_enabled": settings.query_cascading_enabled,
+            "complexity_threshold": settings.query_complexity_threshold,
+        },
+    }
+
+
 # Validate on import if in production
 if settings.is_production():
     validate_ai_services()
+    validate_enterprise_services()

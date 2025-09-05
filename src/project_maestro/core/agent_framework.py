@@ -37,6 +37,7 @@ class AgentType(str, Enum):
     SONATA = "sonata"
     LABYRINTH = "labyrinth"
     BUILDER = "builder"
+    QUERY = "query"  # Enterprise knowledge query agent
 
 
 class AgentStatus(str, Enum):
