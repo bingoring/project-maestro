@@ -11,9 +11,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from pydantic import BaseModel, Field
 
-from langchain.agents import AgentExecutor, create_openai_functions_agent
-from langchain.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool, StructuredTool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langgraph.prebuilt import create_react_agent
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.pydantic_v1 import BaseModel as LangchainBaseModel
 
 from ..core.agent_framework import BaseAgent, AgentType, AgentTask
@@ -381,8 +385,8 @@ class SonataAgent(BaseAgent):
             SonataTools.create_generate_ambient_tool(self),
         ]
         
-    def _create_agent_executor(self) -> AgentExecutor:
-        """Create the LangChain agent executor for audio generation."""
+    def _create_agent_graph(self):
+        """Create the LangGraph agent for audio generation."""
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", self.get_system_prompt()),
@@ -390,15 +394,26 @@ class SonataAgent(BaseAgent):
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
         
-        agent = create_openai_functions_agent(self.llm, self.tools, prompt)
+        memory = MemorySaver()
         
-        return AgentExecutor(
-            agent=agent,
+        agent_graph = create_react_agent(
+            model=self.llm,
             tools=self.tools,
-            verbose=True,
-            handle_parsing_errors=True,
-            callbacks=[self.callback_handler]
+            state_modifier=prompt,
+            checkpointer=memory
         )
+        
+        return agent_graph
+        
+    def _create_runnable_chain(self):
+        """Create LCEL runnable chain for this agent."""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", self.get_system_prompt()),
+            ("human", "{input}")
+        ])
+        
+        chain = prompt | self.llm | StrOutputParser()
+        return chain
         
     def get_system_prompt(self) -> str:
         """Get the system prompt for the Sonata agent."""
@@ -450,11 +465,12 @@ class SonataAgent(BaseAgent):
         elif action == "generate_ambient":
             return await self._handle_ambient_generation(params)
         else:
-            # Use agent executor for complex audio generation
-            result = await self.agent_executor.ainvoke({
-                "input": f"Generate audio for: {action} with specifications: {params}"
-            })
-            return {"result": result["output"]}
+            # Use agent graph for complex audio generation
+            result = await self.agent_graph.ainvoke(
+                {"messages": [HumanMessage(content=f"Generate audio for: {action} with specifications: {params}")]},
+                config={"configurable": {"thread_id": f"sonata_{params.get('task_id', 'default')}"}}
+            )
+            return {"result": result["messages"][-1].content}
             
     async def _handle_sound_generation(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle sound effect generation."""
