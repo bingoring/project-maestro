@@ -27,6 +27,7 @@ from .agent_framework import BaseAgent, AgentType, AgentTask, AgentStatus
 from .logging import get_logger
 from .error_handling import with_error_handling, RecoveryStrategy
 from .monitoring import agent_monitor, metrics_collector
+from .conversation_memory import ConversationMemoryManager, MemoryContext
 
 
 logger = get_logger(__name__)
@@ -52,6 +53,10 @@ class MaestroState(TypedDict):
     workflow_stage: str
     handoff_history: List[Dict[str, Any]]
     execution_metadata: Dict[str, Any]
+    # Memory system integration
+    memory_context: Optional[Dict[str, Any]]  # Current memory context
+    user_id: Optional[str]  # User identification
+    session_id: Optional[str]  # Session identification
 
 
 @dataclass
@@ -76,11 +81,17 @@ class LangGraphOrchestrator:
         self,
         agents: Dict[str, BaseAgent],
         llm: BaseLanguageModel,
-        memory_saver: Optional[MemorySaver] = None
+        memory_saver: Optional[MemorySaver] = None,
+        enable_conversation_memory: bool = True
     ):
         self.agents = agents
         self.llm = llm
         self.memory_saver = memory_saver or MemorySaver()
+        
+        # Initialize conversation memory system
+        self.conversation_memory: Optional[ConversationMemoryManager] = None
+        if enable_conversation_memory:
+            self.conversation_memory = ConversationMemoryManager(llm)
         
         # Initialize intent classifier for enterprise workflows
         from ..core.intent_classifier import IntentClassifier
@@ -130,6 +141,70 @@ class LangGraphOrchestrator:
         
         # Build the main orchestration graph
         self.graph = self._build_orchestration_graph()
+
+    async def _enhance_state_with_memory(self, state: MaestroState) -> MaestroState:
+        """Enhance state with conversation memory context."""
+        if not self.conversation_memory:
+            return state
+            
+        try:
+            user_id = state.get("user_id")
+            session_id = state.get("session_id") 
+            
+            if not user_id or not session_id:
+                logger.warning("Missing user_id or session_id for memory context")
+                return state
+                
+            # Get current query from latest message
+            messages = state.get("messages", [])
+            current_query = ""
+            if messages and isinstance(messages[-1], HumanMessage):
+                current_query = messages[-1].content
+                
+            # Get memory context
+            memory_context = await self.conversation_memory.get_memory_context(
+                user_id, session_id, current_query
+            )
+            
+            # Store memory context in state
+            enhanced_state = dict(state)
+            enhanced_state["memory_context"] = {
+                "summary": memory_context.summary,
+                "relevant_entities": [entity.to_dict() for entity in memory_context.relevant_entities],
+                "token_count": memory_context.token_count,
+                "context_prompt": memory_context.to_prompt_context()
+            }
+            
+            return enhanced_state
+            
+        except Exception as e:
+            logger.error(f"Failed to enhance state with memory: {e}")
+            return state
+    
+    async def _store_message_in_memory(self, message: BaseMessage, state: MaestroState) -> None:
+        """Store message in conversation memory system."""
+        if not self.conversation_memory:
+            return
+            
+        try:
+            user_id = state.get("user_id")
+            session_id = state.get("session_id")
+            
+            if user_id and session_id:
+                await self.conversation_memory.store_message(message, user_id, session_id)
+                
+        except Exception as e:
+            logger.error(f"Failed to store message in memory: {e}")
+    
+    def _create_memory_enhanced_prompt(self, base_prompt: str, state: MaestroState) -> str:
+        """Create prompt enhanced with memory context."""
+        memory_context = state.get("memory_context", {})
+        context_prompt = memory_context.get("context_prompt", "")
+        
+        if context_prompt:
+            return f"{context_prompt}\n\n{base_prompt}"
+        else:
+            return base_prompt
         
     def _build_orchestration_graph(self) -> StateGraph:
         """Build the main LangGraph orchestration graph with enterprise support."""
@@ -397,9 +472,15 @@ Preparing to delegate to Query Agent with enhanced capabilities."""
         async def agent_node(state: MaestroState) -> Command:
             logger.info(f"Executing agent: {agent_name}")
             
+            # Enhance state with memory context
+            enhanced_state = await self._enhance_state_with_memory(state)
+            
             # Extract current task from state
-            current_message = state["messages"][-1]
-            task_context = state.get("task_context", {})
+            current_message = enhanced_state["messages"][-1]
+            task_context = enhanced_state.get("task_context", {})
+            
+            # Store the current message in conversation memory
+            await self._store_message_in_memory(current_message, enhanced_state)
             
             # Create agent task
             task = AgentTask(
@@ -482,12 +563,21 @@ Preparing to delegate to Query Agent with enhanced capabilities."""
         async def supervisor_node(state: MaestroState) -> Command:
             logger.info("Supervisor analyzing task and routing")
             
+            # Enhance state with memory context
+            enhanced_state = await self._enhance_state_with_memory(state)
+            
             # Add context to supervisor
-            enhanced_messages = list(state["messages"])
+            enhanced_messages = list(enhanced_state["messages"])
             
             # Add workflow context
-            context_message = self._create_context_message(state)
+            context_message = self._create_context_message(enhanced_state)
             enhanced_messages.append(context_message)
+            
+            # Add memory context if available
+            memory_context = enhanced_state.get("memory_context", {})
+            if memory_context.get("context_prompt"):
+                memory_message = SystemMessage(content=memory_context["context_prompt"])
+                enhanced_messages.insert(0, memory_message)
             
             # Get supervisor decision
             response = await supervisor_agent.ainvoke({
