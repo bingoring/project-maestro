@@ -1,0 +1,39 @@
+.workflow-page {
+  min-height: 100vh;
+  background: var(--cds-background);
+  
+  .page-header {
+    padding: 2rem;
+    border-bottom: 1px solid var(--cds-border-subtle);
+    background: var(--cds-background-selected);
+    
+    h1 {
+      font-size: 2.25rem;
+      font-weight: 400;
+      color: var(--cds-text-primary);
+      margin: 0 0 0.5rem 0;
+    }
+    
+    .page-subtitle {
+      font-size: 1rem;
+      color: var(--cds-text-secondary);
+      margin: 0;
+      line-height: 1.5;
+    }
+    
+    @media (max-width: 672px) {
+      padding: 1rem;
+      
+      h1 {
+        font-size: 1.75rem;
+      }
+    }
+  }
+  
+  .full-page-monitor {
+    // Full page monitor has no additional padding
+    .monitor-header {
+      padding-top: 0;
+    }
+  }
+}

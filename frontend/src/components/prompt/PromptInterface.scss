@@ -1,0 +1,151 @@
+.prompt-interface {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+
+  .prompt-tile {
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .prompt-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+
+    h2 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 400;
+      color: var(--cds-text-primary);
+    }
+
+    .complexity-indicator {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+  }
+
+  .progress-section {
+    margin-bottom: 2rem;
+    padding: 1rem;
+    background: var(--cds-background-selected);
+    border-radius: 4px;
+
+    .cds--progress {
+      margin: 0;
+    }
+  }
+
+  .file-upload-section {
+    .uploaded-files {
+      margin-top: 1rem;
+      padding: 1rem;
+      background: var(--cds-background-selected-hover);
+      border-radius: 4px;
+
+      h4 {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--cds-text-secondary);
+      }
+
+      .file-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--cds-border-subtle);
+
+        &:last-child {
+          border-bottom: none;
+        }
+
+        .file-size {
+          color: var(--cds-text-secondary);
+          font-size: 0.875rem;
+          margin-left: auto;
+          margin-right: 0.5rem;
+        }
+      }
+    }
+  }
+
+  .prompt-actions {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
+
+    @media (max-width: 672px) {
+      flex-direction: column;
+    }
+  }
+
+  // Loading state styles
+  .cds--text-area:disabled {
+    background: var(--cds-background-disabled);
+    border-color: var(--cds-border-disabled);
+  }
+
+  // Error state styles
+  .cds--text-area[data-invalid] {
+    border-color: var(--cds-support-error);
+    box-shadow: inset 0 0 0 1px var(--cds-support-error);
+  }
+
+  // Notification spacing
+  .cds--inline-notification {
+    margin-top: 1rem;
+    width: 100%;
+
+    &:first-child {
+      margin-top: 0;
+    }
+  }
+
+  // Responsive design
+  @media (max-width: 672px) {
+    .prompt-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+
+    .complexity-indicator {
+      align-self: flex-end;
+    }
+
+    .prompt-tile {
+      padding: 1rem;
+    }
+  }
+
+  // Animation for smooth transitions
+  .progress-section {
+    opacity: 0;
+    transform: translateY(-10px);
+    animation: slideIn 0.3s ease-out forwards;
+  }
+
+  @keyframes slideIn {
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  // Focus states for better accessibility
+  .cds--text-area:focus {
+    outline: 2px solid var(--cds-focus);
+    outline-offset: 2px;
+  }
+
+  .cds--file-uploader:focus-within {
+    outline: 2px solid var(--cds-focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}

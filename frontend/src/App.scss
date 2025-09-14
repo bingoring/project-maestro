@@ -1,0 +1,301 @@
+// Global app styles
+.app {
+  min-height: 100vh;
+  background: var(--cds-background);
+  color: var(--cds-text-primary);
+  font-family: var(--cds-font-family);
+}
+
+// Override Carbon default styles for our theme
+:root {
+  // Custom CSS variables for consistent theming
+  --maestro-primary: #0f62fe;
+  --maestro-secondary: #393939;
+  --maestro-accent: #8a3ffc;
+  --maestro-success: #24a148;
+  --maestro-warning: #f1c21b;
+  --maestro-error: #da1e28;
+  
+  // Agent status colors
+  --maestro-agent-idle: #525252;
+  --maestro-agent-planning: #0f62fe;
+  --maestro-agent-executing: #42be65;
+  --maestro-agent-waiting: #f1c21b;
+  --maestro-agent-error: #da1e28;
+  --maestro-agent-complete: #24a148;
+
+  // Workflow colors
+  --maestro-workflow-bg: #161616;
+  --maestro-workflow-border: #393939;
+  --maestro-workflow-hover: #4c4c4c;
+}
+
+// Global typography adjustments
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+// Smooth transitions for interactive elements
+* {
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+
+// Custom scrollbar styling
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--cds-background);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cds-border-strong);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cds-border-inverse);
+}
+
+// Firefox scrollbar
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cds-border-strong) var(--cds-background);
+}
+
+// Focus styles for accessibility
+:focus-visible {
+  outline: 2px solid var(--cds-focus);
+  outline-offset: 2px;
+}
+
+// Loading states
+.loading-skeleton {
+  background: var(--cds-skeleton-background);
+  animation: skeleton-loading 1.5s infinite ease-in-out;
+}
+
+@keyframes skeleton-loading {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+// Error states
+.error-boundary {
+  padding: 2rem;
+  text-align: center;
+  background: var(--cds-background);
+  border: 1px solid var(--cds-support-error);
+  border-radius: 4px;
+  margin: 1rem;
+
+  h2 {
+    color: var(--cds-support-error);
+    margin-bottom: 1rem;
+  }
+
+  p {
+    color: var(--cds-text-secondary);
+    margin-bottom: 1rem;
+  }
+}
+
+// Utility classes
+.text-center {
+  text-align: center;
+}
+
+.text-left {
+  text-align: left;
+}
+
+.text-right {
+  text-align: right;
+}
+
+.margin-bottom-sm {
+  margin-bottom: 0.5rem;
+}
+
+.margin-bottom-md {
+  margin-bottom: 1rem;
+}
+
+.margin-bottom-lg {
+  margin-bottom: 1.5rem;
+}
+
+.padding-sm {
+  padding: 0.5rem;
+}
+
+.padding-md {
+  padding: 1rem;
+}
+
+.padding-lg {
+  padding: 1.5rem;
+}
+
+.flex {
+  display: flex;
+}
+
+.flex-column {
+  flex-direction: column;
+}
+
+.flex-center {
+  align-items: center;
+  justify-content: center;
+}
+
+.flex-between {
+  justify-content: space-between;
+}
+
+.flex-wrap {
+  flex-wrap: wrap;
+}
+
+.gap-sm {
+  gap: 0.5rem;
+}
+
+.gap-md {
+  gap: 1rem;
+}
+
+.gap-lg {
+  gap: 1.5rem;
+}
+
+// Responsive utilities
+.hide-mobile {
+  @media (max-width: 672px) {
+    display: none !important;
+  }
+}
+
+.hide-tablet {
+  @media (max-width: 1056px) {
+    display: none !important;
+  }
+}
+
+.show-mobile {
+  display: none;
+  
+  @media (max-width: 672px) {
+    display: block !important;
+  }
+}
+
+// Animation utilities
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.slide-in {
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+// Status indicators
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+
+  &::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  &.status-idle::before {
+    background: var(--maestro-agent-idle);
+  }
+
+  &.status-planning::before {
+    background: var(--maestro-agent-planning);
+  }
+
+  &.status-executing::before {
+    background: var(--maestro-agent-executing);
+    animation: pulse 2s infinite;
+  }
+
+  &.status-waiting::before {
+    background: var(--maestro-agent-waiting);
+  }
+
+  &.status-error::before {
+    background: var(--maestro-agent-error);
+  }
+
+  &.status-complete::before {
+    background: var(--maestro-agent-complete);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+// Custom Carbon overrides
+.cds--tile {
+  border: 1px solid var(--cds-border-subtle);
+}
+
+.cds--tile:hover {
+  border-color: var(--cds-border-strong);
+}
+
+.cds--progress-bar {
+  .cds--progress-bar__bar {
+    border-radius: 2px;
+  }
+}
+
+// Dark theme specific adjustments
+@media (prefers-color-scheme: dark) {
+  .app {
+    // Additional dark theme styles if needed
+  }
+}
