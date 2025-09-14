@@ -76,6 +76,42 @@ maestro init
 maestro server start
 ```
 
+## 🔧 설정
+
+### 환경 변수
+
+```bash
+# 핵심 설정
+MAESTRO_ENVIRONMENT=production
+MAESTRO_DEBUG=false
+MAESTRO_LOG_LEVEL=INFO
+
+# API 설정
+MAESTRO_API_HOST=0.0.0.0
+MAESTRO_API_PORT=8000
+MAESTRO_API_WORKERS=4
+
+# 데이터베이스
+MAESTRO_DATABASE_URL=postgresql://user:pass@localhost/maestro
+
+# Redis
+MAESTRO_REDIS_URL=redis://localhost:6379/0
+
+# 스토리지
+MAESTRO_STORAGE_TYPE=minio  # minio, s3, local
+MAESTRO_MINIO_ENDPOINT=localhost:9000
+MAESTRO_MINIO_ACCESS_KEY=minioaccess
+MAESTRO_MINIO_SECRET_KEY=miniosecret
+
+# AI 서비스
+OPENAI_API_KEY=your_openai_key
+ANTHROPIC_API_KEY=your_anthropic_key
+STABLE_DIFFUSION_API_KEY=your_sd_key
+
+# Unity
+MAESTRO_UNITY_PATH=/Applications/Unity/Hub/Editor/2023.2.0f1
+```
+
 ## 🚦 빠른 시작
 
 ### 1. 기본 워크플로우 생성
