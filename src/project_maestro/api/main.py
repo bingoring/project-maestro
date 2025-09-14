@@ -134,6 +134,10 @@ app.include_router(conversations.router, tags=["conversations"])
 app.include_router(privacy.router, tags=["privacy"])
 app.include_router(websocket.router, prefix="/api/v1", tags=["websocket"])
 
+# Include advanced features router
+from .endpoints import advanced_features
+app.include_router(advanced_features.router, prefix="/api/v1", tags=["advanced-features"])
+
 
 # Global exception handler
 @app.exception_handler(Exception)
